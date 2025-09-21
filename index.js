@@ -1,0 +1,161 @@
+// =================================================================
+// PHẦN 1: IMPORT VÀ THIẾT LẬP
+// =================================================================
+const express = require('express');
+const http = require('http');
+const { Server } = require("socket.io");
+const cors = require('cors');
+const db = require('./db.js');
+
+const app = express();
+app.use(cors());
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
+const PORT = 3001;
+
+// =================================================================
+// PHẦN 2: CÁC BIẾN VÀ HÀM HỖ TRỢ
+// =================================================================
+const matchmakingQueue = {};
+const gameRooms = {};
+
+function processRawQuestions(rows) {
+    const questionsMap = new Map();
+    for (const row of rows) {
+        const questionText = row.question_text.replace(/<[^>]*>/g, '').trim();
+        const answerText = row.answer_text.replace(/<[^>]*>/g, '').trim();
+        if (!questionsMap.has(row.question_id)) {
+            questionsMap.set(row.question_id, {
+                question: questionText,
+                answers: [],
+                correctAnswer: ''
+            });
+        }
+        const question = questionsMap.get(row.question_id);
+        question.answers.push(answerText);
+        if (parseFloat(row.fraction) > 0) { 
+            question.correctAnswer = answerText;
+        }
+    }
+    questionsMap.forEach(q => { q.answers.sort(() => Math.random() - 0.5); });
+    return Array.from(questionsMap.values());
+}
+
+// =================================================================
+// PHẦN 3: CÁC API ENDPOINT
+// =================================================================
+app.get('/api/courses', async (req, res) => {
+    try {
+        const courses = await db.query('SELECT id, fullname AS name FROM mdl_course WHERE visible = 1');
+        res.json(courses);
+    } catch (error) {
+        res.status(500).json({ message: "Không thể lấy dữ liệu khóa học từ Moodle DB." });
+    }
+});
+app.get('/api/ranking', (req, res) => { res.json([]); });
+
+// =================================================================
+// PHẦN 4: LOGIC GAME REAL-TIME
+// =================================================================
+io.on('connection', (socket) => {
+    console.log('Một người chơi đã kết nối:', socket.id);
+    io.emit('online_players_update', io.engine.clientsCount);
+    socket.on('disconnect', () => { io.emit('online_players_update', io.engine.clientsCount); });
+
+    socket.on('join_queue', async (data) => {
+        const { courseId } = data;
+        if (!matchmakingQueue[courseId]) { matchmakingQueue[courseId] = []; }
+        matchmakingQueue[courseId].push(socket.id);
+
+        if (matchmakingQueue[courseId].length >= 2) {
+            try {
+                console.log(`Tìm trận cho khóa học ID: ${courseId}. Bắt đầu lấy câu hỏi từ Question Bank...`);
+
+                // 1. TÌM DANH MỤC CÂU HỎI (PHIÊN BẢN CẢI TIẾN)
+                const categorySql = `
+                    SELECT cat.id FROM mdl_question_categories cat 
+                    JOIN mdl_context ctx ON cat.contextid = ctx.id 
+                    WHERE ctx.path LIKE CONCAT((SELECT path FROM mdl_context WHERE contextlevel=50 AND instanceid=${courseId}), '/%')
+                    ORDER BY RAND() LIMIT 1
+                `;
+                const categories = await db.query(categorySql);
+                if (categories.length === 0) { throw new Error(`Không tìm thấy danh mục câu hỏi nào cho khóa học ${courseId}. Hãy chắc chắn bạn đã tạo câu hỏi trong Question Bank của khóa học đó.`); }
+                const categoryId = categories[0].id;
+                console.log(`Đã tìm thấy danh mục câu hỏi ID: ${categoryId}`);
+
+                // 2. LẤY CÂU HỎI TỪ DANH MỤC
+                const questionSql = `SELECT q.id AS question_id, q.questiontext AS question_text, qa.answer AS answer_text, qa.fraction FROM mdl_question q JOIN mdl_question_answers qa ON q.id = qa.questionid WHERE q.category = ${categoryId} ORDER BY q.id`;
+                const rawQuestions = await db.query(questionSql);
+                
+                const questions = processRawQuestions(rawQuestions);
+                if (questions.length === 0) { throw new Error(`Không tìm thấy câu hỏi nào trong danh mục ${categoryId}`); }
+                console.log(`✅ Lấy thành công ${questions.length} câu hỏi thật từ Question Bank.`);
+                
+                // Các bước còn lại giữ nguyên
+                const player1Id = matchmakingQueue[courseId].shift();
+                const player2Id = matchmakingQueue[courseId].shift();
+                const roomId = `room-${player1Id}-${player2Id}`;
+                const player1Socket = io.sockets.sockets.get(player1Id);
+                const player2Socket = io.sockets.sockets.get(player2Id);
+                player1Socket.join(roomId);
+                player2Socket.join(roomId);
+                
+                gameRooms[roomId] = {
+                    players: [ { id: player1Id, name: `Player_${player1Id.substring(0,5)}`, score: 0, hp: 100 }, { id: player2Id, name: `Player_${player2Id.substring(0,5)}`, score: 0, hp: 100 } ],
+                    questions: questions,
+                    currentQuestionIndex: 0,
+                    questionStartTime: Date.now(),
+                    isQuestionAnswered: false,
+                };
+                io.to(roomId).emit('game_start', { roomId: roomId, players: gameRooms[roomId].players, question: questions[0] });
+
+            } catch (error) {
+                console.error("Đã xảy ra lỗi khi bắt đầu trận đấu:", error.message);
+            }
+        }
+    });
+
+    const QUESTION_TIME_LIMIT = 30;
+    const BASE_SCORE = 20;
+    socket.on('submit_answer', (data) => {
+       const { roomId, answer } = data;
+        const room = gameRooms[roomId];
+        if (!room || room.isQuestionAnswered) { return; }
+        room.isQuestionAnswered = true;
+        const timeTaken = (Date.now() - room.questionStartTime) / 1000;
+        const question = room.questions[room.currentQuestionIndex];
+        const isCorrect = (answer === question.correctAnswer);
+        const playerIndex = room.players.findIndex(p => p.id === socket.id);
+        if (playerIndex !== -1) {
+            if (isCorrect) {
+                const timeBonus = Math.floor(Math.max(0, QUESTION_TIME_LIMIT - timeTaken) * 10);
+                room.players[playerIndex].score += BASE_SCORE + timeBonus;
+            } else {
+                room.players[playerIndex].hp -= 20;
+            }
+        }
+        io.to(roomId).emit('round_result', { isCorrect: isCorrect, answeredPlayerId: socket.id, players: room.players });
+        setTimeout(() => {
+            room.currentQuestionIndex++;
+            if (room.currentQuestionIndex < room.questions.length) {
+                const nextQuestion = room.questions[room.currentQuestionIndex];
+                room.questionStartTime = Date.now();
+                room.isQuestionAnswered = false; 
+                io.to(roomId).emit('new_question', { question: nextQuestion });
+            } else {
+                io.to(roomId).emit('game_over', { 
+                    message: "Trận đấu kết thúc!",
+                    finalState: room.players,
+                    roomId: roomId 
+                });
+            }
+        }, 2000);
+    });
+});
+
+// =================================================================
+// PHẦN 5: KHỞI ĐỘNG SERVER
+// =================================================================
+server.listen(PORT, () => {
+    console.log(`🚀 Server backend đang chạy tại http://localhost:${PORT}`);
+});
