@@ -1,22 +1,21 @@
 const mysql = require('mysql2/promise');
 const { Client } = require('ssh2');
-const fs = require('fs');
 
-// --- ⚠️ CẤU HÌNH CỦA BẠN ---
+// Sửa lại đoạn này trong file db.js
 const sshConfig = {
   host: '3.83.207.81',
   port: 22,
   username: 'ubuntu',
-  privateKey: fs.readFileSync('C:\\Users\\LG Gram\\OneDrive\\Máy tính\\suu.pem') // ⚠️ SỬA LẠI ĐÚNG ĐƯỜNG DẪN FILE .pem
+  // Đọc file từ đường dẫn bí mật của Render
+  privateKey: fs.readFileSync('/etc/secrets/suu.pem') 
 };
 
 const dbConfig = {
-  host: '127.0.0.1', // Luôn là 127.0.0.1 khi dùng tunnel
-  user: 'moodleuser',
-  password: '011104',
-  database: 'moodle',
+  host: '127.0.0.1',
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
 };
-// -------------------------
 
 const sshClient = new Client();
 let dbConnection;
