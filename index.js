@@ -13,8 +13,8 @@ const { createClient } = require('@supabase/supabase-js');
 const SUPABASE_URL = 'https://wxoldrwaowqvcgzdozlf.supabase.co'; 
 const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4b2xkcndhb3dxdmNnemRvemxmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTUxNzE0MCwiZXhwIjoyMDY3MDkzMTQwfQ.z7rdr1mfEqKTug1zR85NHSVPbr-2W0I7aFXWyFJcCd0';
 const FRONTEND_URL = 'https://nhanhnhuchopgami.netlify.app'; // URL frontend trên Netlify
-const LTI_KEY = 'nhanhnhuchop-key'; // 
-const LTI_SECRET = 'H@I159753852'; //
+const LTI_KEY = 'nhanhnhuchop-key'; 
+const LTI_SECRET = 'H@I159753852';
 // -----------------------------------------
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
@@ -30,7 +30,7 @@ const PORT = 3001;
 // =================================================================
 const matchmakingQueue = {};
 const gameRooms = {};
-const playersInfo = {}; 
+const playersInfo = {};
 const tempTokens = {};
 
 function processRawQuestions(rows) {
