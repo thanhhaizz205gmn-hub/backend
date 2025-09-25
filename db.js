@@ -1,13 +1,14 @@
+require('dotenv').config(); // Tải các biến từ file .env
+const fs = require('fs');
 const mysql = require('mysql2/promise');
 const { Client } = require('ssh2');
-const fs = require('fs');
-// Sửa lại đoạn này trong file db.js
+
 const sshConfig = {
-  host: '3.83.207.81',
+  host: process.env.SSH_HOST,
   port: 22,
-  username: 'ubuntu',
-  // Đọc file từ đường dẫn bí mật của Render
-  privateKey: fs.readFileSync('/etc/secrets/suu.pem') 
+  username: process.env.SSH_USER,
+  // Dùng biến SSH_PRIVATE_KEY thay vì đọc file trực tiếp
+  privateKey: process.env.SSH_PRIVATE_KEY 
 };
 
 const dbConfig = {
@@ -17,39 +18,31 @@ const dbConfig = {
   database: process.env.DB_NAME,
 };
 
+// ... (phần code còn lại của db.js giữ nguyên)
+// ... (phần tạo tunnel và hàm query)
 const sshClient = new Client();
 let dbConnection;
 
 const connectToDatabase = () => {
-  return new Promise((resolve, reject) => {
-    sshClient.on('ready', () => {
-      console.log('✅ Kết nối SSH thành công!');
-      sshClient.forwardOut(
-        '127.0.0.1',
-        0,
-        dbConfig.host,
-        3306, // Cổng MySQL mặc định
-        async (err, stream) => {
-          if (err) return reject(err);
-          console.log('✅ Đường hầm SSH đã được tạo!');
-
-          const updatedDbConfig = { ...dbConfig, stream };
-          dbConnection = await mysql.createConnection(updatedDbConfig);
-
-          console.log('✅ Kết nối Database qua đường hầm thành công!');
-          resolve(dbConnection);
-        }
-      );
-    }).connect(sshConfig);
-
-    sshClient.on('error', (err) => {
-        console.error('Lỗi kết nối SSH:', err);
-        reject(err);
+    return new Promise((resolve, reject) => {
+        sshClient.on('ready', () => {
+            console.log('✅ Kết nối SSH thành công!');
+            sshClient.forwardOut('127.0.0.1', 0, dbConfig.host, 3306, async (err, stream) => {
+                if (err) return reject(err);
+                console.log('✅ Đường hầm SSH đã được tạo!');
+                const updatedDbConfig = { ...dbConfig, stream };
+                dbConnection = await mysql.createConnection(updatedDbConfig);
+                console.log('✅ Kết nối Database qua đường hầm thành công!');
+                resolve(dbConnection);
+            });
+        }).connect(sshConfig);
+        sshClient.on('error', (err) => {
+            console.error('Lỗi kết nối SSH:', err);
+            reject(err);
+        });
     });
-  });
 };
 
-// Hàm để chạy câu lệnh SQL
 async function query(sql) {
     if (!dbConnection) {
         await connectToDatabase();
@@ -59,7 +52,6 @@ async function query(sql) {
         return results;
     } catch (error) {
         console.error("Lỗi khi thực thi câu lệnh SQL:", error);
-        // Cố gắng kết nối lại nếu có lỗi
         dbConnection = null; 
         throw error;
     }
