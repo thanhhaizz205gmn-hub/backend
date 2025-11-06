@@ -6,18 +6,7 @@ const http = require('http');
 const { Server } = require("socket.io");
 const cors = require('cors');
 const db = require('./db.js');
-const lti = require('ims-lti');
-const { createClient } = require('@supabase/supabase-js');
 
-// --- ⚠️ THAY THẾ CÁC THÔNG TIN SAU ---
-const SUPABASE_URL = 'https://wxoldrwaowqvcgzdozlf.supabase.co'; 
-const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind4b2xkcndhb3dxdmNnemRvemxmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTUxNzE0MCwiZXhwIjoyMDY3MDkzMTQwfQ.z7rdr1mfEqKTug1zR85NHSVPbr-2W0I7aFXWyFJcCd0';
-const FRONTEND_URL = 'https://nhanhnhuchopgami.netlify.app'; // URL frontend trên Netlify
-const LTI_KEY = 'nhanhnhuchop-key'; 
-const LTI_SECRET = 'H@I159753852';
-// -----------------------------------------
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const app = express();
 app.use(cors());
 app.use(express.urlencoded({ extended: true }));
@@ -33,6 +22,7 @@ const gameRooms = {};
 const playersInfo = {};
 const tempTokens = {};
 
+// Hàm xử lý cho Question Bank tiêu chuẩn (dùng cột 'fraction')
 function processRawQuestions(rows) {
     const questionsMap = new Map();
     for (const row of rows) {
@@ -47,6 +37,7 @@ function processRawQuestions(rows) {
         }
         const question = questionsMap.get(row.question_id);
         question.answers.push(answerText);
+        // Dùng 'fraction' cho câu hỏi từ Question Bank
         if (parseFloat(row.fraction) > 0) { 
             question.correctAnswer = answerText;
         }
@@ -55,60 +46,11 @@ function processRawQuestions(rows) {
     return Array.from(questionsMap.values());
 }
 
-async function saveGameResult(finalPlayers) {
-    try {
-        console.log("Đang lưu kết quả trận đấu vào Supabase...");
-        for (const player of finalPlayers) {
-            const moodleInfo = playersInfo[player.id];
-            if (!moodleInfo || !moodleInfo.id) continue;
-
-            const { data: existingPlayer } = await supabase
-                .from('players')
-                .select('total_score, matches_played')
-                .eq('moodle_id', moodleInfo.id)
-                .single();
-
-            if (existingPlayer) {
-                await supabase.from('players').update({ 
-                    total_score: existingPlayer.total_score + player.score,
-                    matches_played: existingPlayer.matches_played + 1,
-                    name: moodleInfo.name
-                }).eq('moodle_id', moodleInfo.id);
-            } else {
-                await supabase.from('players').insert({ 
-                    moodle_id: moodleInfo.id, 
-                    name: moodleInfo.name, 
-                    total_score: player.score,
-                    matches_played: 1 
-                });
-            }
-        }
-        console.log("✅ Đã lưu kết quả thành công vào Supabase.");
-    } catch (error) {
-        if (error.code !== 'PGRST116') { 
-            console.error("Lỗi khi lưu kết quả vào Supabase:", error.message);
-        }
-    }
-}
+// (Chúng ta sẽ thêm hàm saveGameResult cho Supabase sau khi deploy)
 
 // =================================================================
 // PHẦN 3: CÁC API ENDPOINT
 // =================================================================
-app.post('/lti/launch', (req, res) => {
-    const provider = new lti.Provider(LTI_KEY, LTI_SECRET);
-    provider.valid_request(req, (err, isValid) => {
-        if (err || !isValid) {
-            return res.status(401).send("Yêu cầu LTI không hợp lệ.");
-        }
-        const userId = provider.body.user_id;
-        const userName = provider.body.lis_person_full_name;
-        const tempToken = require('crypto').randomBytes(16).toString('hex');
-        tempTokens[tempToken] = { id: userId, name: userName };
-        setTimeout(() => delete tempTokens[tempToken], 60000);
-        res.redirect(`${FRONTEND_URL}?launch_token=${tempToken}`);
-    });
-});
-
 app.get('/api/courses', async (req, res) => {
     try {
         const courses = await db.query('SELECT id, fullname AS name FROM mdl_course WHERE visible = 1');
@@ -117,20 +59,7 @@ app.get('/api/courses', async (req, res) => {
         res.status(500).json({ message: "Không thể lấy dữ liệu khóa học từ Moodle DB." });
     }
 });
-
-app.get('/api/ranking', async (req, res) => {
-    try {
-        const { data, error } = await supabase
-            .from('players')
-            .select('name, total_score')
-            .order('total_score', { ascending: false })
-            .limit(10);
-        if (error) throw error;
-        res.json(data);
-    } catch (error) {
-        res.status(500).json({ message: "Không thể lấy bảng xếp hạng." });
-    }
-});
+app.get('/api/ranking', (req, res) => { res.json([]); }); // Tạm thời trả về rỗng
 
 // =================================================================
 // PHẦN 4: LOGIC GAME REAL-TIME
@@ -141,12 +70,7 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => { io.emit('online_players_update', io.engine.clientsCount); });
 
     socket.on('player_identify', (data) => {
-        const userInfo = tempTokens[data.token];
-        if (userInfo) {
-            playersInfo[socket.id] = userInfo;
-            delete tempTokens[data.token];
-            console.log(`✅ Người chơi ${socket.id} đã được xác thực là ${userInfo.name} (Moodle ID: ${userInfo.id})`);
-        }
+        // (Logic LTI sẽ thêm vào sau khi deploy)
     });
 
     socket.on('join_queue', async (data) => {
@@ -155,27 +79,71 @@ io.on('connection', (socket) => {
         matchmakingQueue[courseId].push(socket.id);
 
         if (matchmakingQueue[courseId].length >= 2) {
-            try {
-                const categorySql = `SELECT cat.id FROM mdl_question_categories cat JOIN mdl_context ctx ON cat.contextid = ctx.id WHERE ctx.path LIKE CONCAT((SELECT path FROM mdl_context WHERE contextlevel=50 AND instanceid=${courseId}), '/%') ORDER BY RAND() LIMIT 1`;
-                const categories = await db.query(categorySql);
-                if (categories.length === 0) { throw new Error(`Không tìm thấy danh mục câu hỏi cho khóa học ${courseId}.`); }
-                const categoryId = categories[0].id;
+            const player1Id = matchmakingQueue[courseId].shift();
+            const player2Id = matchmakingQueue[courseId].shift();
 
-                const questionSql = `SELECT q.id AS question_id, q.questiontext AS question_text, qa.answer AS answer_text, qa.fraction FROM mdl_question q JOIN mdl_question_answers qa ON q.id = qa.questionid WHERE q.category = ${categoryId} ORDER BY q.id`;
+            // === LOGIC MỚI: KIỂM TRA NGƯỜI CHƠI CÒN KẾT NỐI KHÔNG ===
+            const player1Socket = io.sockets.sockets.get(player1Id);
+            const player2Socket = io.sockets.sockets.get(player2Id);
+
+            if (!player1Socket) {
+                console.log(`Người chơi ${player1Id} đã ngắt kết nối. Đưa ${player2Id} trở lại hàng chờ.`);
+                if (player2Socket) matchmakingQueue[courseId].push(player2Id); // Đưa người chơi 2 về lại hàng chờ
+                return;
+            }
+            if (!player2Socket) {
+                console.log(`Người chơi ${player2Id} đã ngắt kết nối. Đưa ${player1Id} trở lại hàng chờ.`);
+                matchmakingQueue[courseId].push(player1Id); // Đưa người chơi 1 về lại hàng chờ
+                return;
+            }
+            // =========================================================
+
+            try {
+                // 1. Tìm một danh mục câu hỏi ngẫu nhiên thuộc khóa học
+                console.log(`Tìm trận cho khóa học ID: ${courseId}. Bắt đầu lấy câu hỏi từ Question Bank...`);
+                const categorySql = `
+                    SELECT DISTINCT cat.id 
+                    FROM mdl_question_categories cat 
+                    JOIN mdl_context ctx ON cat.contextid = ctx.id 
+                    JOIN mdl_question_bank_entries qbe ON qbe.questioncategoryid = cat.id
+                    WHERE ctx.path LIKE CONCAT((SELECT path FROM mdl_context WHERE contextlevel=50 AND instanceid=${courseId}), '/%')
+                    ORDER BY RAND() 
+                    LIMIT 1
+                `;
+                const categories = await db.query(categorySql);
+                if (categories.length === 0) { throw new Error(`Không tìm thấy danh mục câu hỏi nào (có chứa câu hỏi) cho khóa học ${courseId}.`); }
+                const categoryId = categories[0].id;
+                console.log(`Đã tìm thấy danh mục câu hỏi (có câu hỏi) ID: ${categoryId}`);
+
+                // 2. Lấy câu hỏi từ danh mục đó
+                const questionSql = `
+                    SELECT 
+                        q.id AS question_id, 
+                        q.questiontext AS question_text, 
+                        qa.answer AS answer_text, 
+                        qa.fraction 
+                    FROM 
+                        mdl_question_bank_entries qbe
+                    JOIN 
+                        mdl_question q ON qbe.id = q.id 
+                    JOIN 
+                        mdl_question_answers qa ON q.id = qa.question 
+                    WHERE 
+                        qbe.questioncategoryid = ${categoryId}
+                    ORDER BY 
+                        q.id
+                `;
                 const rawQuestions = await db.query(questionSql);
                 
                 const questions = processRawQuestions(rawQuestions);
-                if (questions.length === 0) { throw new Error(`Không tìm thấy câu hỏi trong danh mục ${categoryId}`); }
-                console.log(`✅ Lấy thành công ${questions.length} câu hỏi thật.`);
+                if (questions.length === 0) { throw new Error(`Không tìm thấy câu hỏi nào trong danh mục ${categoryId} (lỗi logic)`); }
+                console.log(`✅ Lấy thành công ${questions.length} câu hỏi thật từ Question Bank.`);
                 
-                const player1Id = matchmakingQueue[courseId].shift();
-                const player2Id = matchmakingQueue[courseId].shift();
+                // Các bước còn lại giữ nguyên
                 const roomId = `room-${player1Id}-${player2Id}`;
-                const player1Socket = io.sockets.sockets.get(player1Id);
-                const player2Socket = io.sockets.sockets.get(player2Id);
-                player1Socket.join(roomId);
+                player1Socket.join(roomId); // Bây giờ lệnh join() đã an toàn
                 player2Socket.join(roomId);
-
+                
                 const player1Name = playersInfo[player1Id]?.name || `Player_${player1Id.substring(0,5)}`;
                 const player2Name = playersInfo[player2Id]?.name || `Player_${player2Id.substring(0,5)}`;
                 
@@ -185,8 +153,10 @@ io.on('connection', (socket) => {
                     currentQuestionIndex: 0,
                     questionStartTime: Date.now(),
                     isQuestionAnswered: false,
+                    timer: null
                 };
                 io.to(roomId).emit('game_start', { roomId: roomId, players: gameRooms[roomId].players, question: questions[0] });
+                startQuestionTimer(roomId); // Bắt đầu timer cho câu hỏi đầu
 
             } catch (error) {
                 console.error("Đã xảy ra lỗi khi bắt đầu trận đấu:", error.message);
@@ -194,41 +164,62 @@ io.on('connection', (socket) => {
         }
     });
 
-    const QUESTION_TIME_LIMIT = 30;
-    const BASE_SCORE = 20;
     socket.on('submit_answer', (data) => {
         const { roomId, answer } = data;
         const room = gameRooms[roomId];
         if (!room || room.isQuestionAnswered) { return; }
+
+        clearTimeout(room.timer); // Dừng timer ngay khi có người trả lời
         room.isQuestionAnswered = true;
+        
         const timeTaken = (Date.now() - room.questionStartTime) / 1000;
         const question = room.questions[room.currentQuestionIndex];
         const isCorrect = (answer === question.correctAnswer);
         const playerIndex = room.players.findIndex(p => p.id === socket.id);
+        
         if (playerIndex !== -1) {
             if (isCorrect) {
                 const timeBonus = Math.floor(Math.max(0, QUESTION_TIME_LIMIT - timeTaken) * 10);
                 room.players[playerIndex].score += BASE_SCORE + timeBonus;
             } else {
-                room.players[playerIndex].hp -= 20;
+                room.players[playerIndex].hp -= 20; 
             }
         }
+        
         io.to(roomId).emit('round_result', { isCorrect: isCorrect, answeredPlayerId: socket.id, players: room.players });
+        
         setTimeout(() => {
-            room.currentQuestionIndex++;
-            if (room.currentQuestionIndex < room.questions.length) {
-                const nextQuestion = room.questions[room.currentQuestionIndex];
-                room.questionStartTime = Date.now();
-                room.isQuestionAnswered = false; 
-                io.to(roomId).emit('new_question', { question: nextQuestion });
-            } else {
+            const player1 = room.players[0];
+            const player2 = room.players[1];
+            
+            if (player1.hp <= 0 || player2.hp <= 0) {
+                console.log(`[Game End] Một người chơi đã hết máu.`);
                 const finalState = room.players;
                 io.to(roomId).emit('game_over', { 
                     message: "Trận đấu kết thúc!",
                     finalState: finalState,
                     roomId: roomId 
                 });
-                saveGameResult(finalState);
+                // saveGameResult(finalState); 
+                return; 
+            }
+
+            room.currentQuestionIndex++;
+            if (room.currentQuestionIndex < room.questions.length) {
+                const nextQuestion = room.questions[room.currentQuestionIndex];
+                room.questionStartTime = Date.now();
+                room.isQuestionAnswered = false; 
+                io.to(roomId).emit('new_question', { question: nextQuestion });
+                startQuestionTimer(roomId); // Bắt đầu timer cho câu hỏi mới
+            } else {
+                console.log(`[Game End] Hết câu hỏi.`);
+                const finalState = room.players;
+                io.to(roomId).emit('game_over', { 
+                    message: "Trận đấu kết thúc!",
+                    finalState: finalState,
+                    roomId: roomId 
+                });
+                // saveGameResult(finalState); 
             }
         }, 2000);
     });
@@ -237,6 +228,28 @@ io.on('connection', (socket) => {
 // =================================================================
 // PHẦN 5: KHỞI ĐỘNG SERVER
 // =================================================================
+const QUESTION_TIME_LIMIT = 30;
+const BASE_SCORE = 20;
+
+function startQuestionTimer(roomId) {
+    const room = gameRooms[roomId];
+    if (!room) return;
+    if (room.timer) { clearTimeout(room.timer); }
+    room.timer = setTimeout(() => {
+        if (room && !room.isQuestionAnswered) {
+            console.log(`[Game End] Hết giờ cho phòng ${roomId}`);
+            room.isQuestionAnswered = true; 
+            const finalState = room.players;
+            io.to(roomId).emit('game_over', { 
+                message: "Hết giờ! Trận đấu kết thúc!",
+                finalState: finalState,
+                roomId: roomId 
+            });
+            // saveGameResult(finalState); 
+        }
+    }, (QUESTION_TIME_LIMIT * 1000) + 1000); 
+}
+
 server.listen(PORT, () => {
     console.log(`🚀 Server backend đang chạy tại http://localhost:${PORT}`);
 });
